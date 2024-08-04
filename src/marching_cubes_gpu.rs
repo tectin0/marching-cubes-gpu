@@ -31,19 +31,6 @@ pub struct Chunk {
     pub voxels: Vec<Voxel>,
 }
 
-#[derive(Component)]
-pub struct Map {
-    pub chunks: HashMap<IVec3, Entity>,
-}
-
-impl Default for Map {
-    fn default() -> Self {
-        Self {
-            chunks: HashMap::default(),
-        }
-    }
-}
-
 impl Chunk {
     pub fn new(position: IVec3) -> Self {
         let mut voxels = Vec::with_capacity(CHUNK_SZ_3);
@@ -61,7 +48,6 @@ pub struct Voxel {
 
 #[derive(Resource)]
 pub struct VoxelsPipeline {
-    simplex_pipeline: ComputePipeline,
     voxels_pipeline: ComputePipeline,
 }
 
@@ -84,19 +70,18 @@ pub struct VoxelBuffers {
 }
 
 struct BindingGroups {
-    simplex: BindGroup,
     voxels: BindGroup,
 }
 
-pub struct VoxelsPlugin;
+pub struct MarchingCubesGpuPlugin;
 
-impl Plugin for VoxelsPlugin {
+impl Plugin for MarchingCubesGpuPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             PreUpdate,
             (
                 init_pipeline_system.run_if(not(resource_exists::<VoxelsPipeline>)),
-                voxel_polygonize_system.run_if(resource_exists::<VoxelsPipeline>),
+                marching_cubes_system.run_if(resource_exists::<VoxelsPipeline>),
             ),
         );
     }
@@ -141,22 +126,6 @@ fn init_pipeline_system(mut commands: Commands, render_device: Res<RenderDevice>
         usage: BufferUsages::COPY_SRC,
     });
 
-    // let simplex_shader = asset_server.load("shaders/simplex.wgsl");
-    let shader_source = include_str!("../assets/shaders/simplex.wgsl");
-    let shader = render_device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("simplex shader"),
-        source: ShaderSource::Wgsl(shader_source.into()),
-    });
-    // TODO:arch update to Bevy compute creation when they allow PipelineCache to be used in main world
-    let simplex_pipeline =
-        render_device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("simplex pipeline"),
-            layout: None,
-            module: &shader,
-            entry_point: "main",
-            compilation_options: Default::default(),
-        });
-
     // let voxel_shader = asset_server.load("shaders/voxels.wgsl");
     let shader_source = include_str!("../assets/shaders/voxels.wgsl");
     let shader = render_device.create_shader_module(ShaderModuleDescriptor {
@@ -185,13 +154,10 @@ fn init_pipeline_system(mut commands: Commands, render_device: Res<RenderDevice>
         atomics,
         atomics_staging,
     });
-    commands.insert_resource(VoxelsPipeline {
-        simplex_pipeline,
-        voxels_pipeline,
-    });
+    commands.insert_resource(VoxelsPipeline { voxels_pipeline });
 }
 
-pub fn voxel_polygonize_system(
+pub fn marching_cubes_system(
     mut commands: Commands,
     mut query: Query<(Entity, &Handle<Mesh>, &mut Chunk)>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -219,14 +185,6 @@ pub fn voxel_polygonize_system(
         }
 
         let binding_groups = BindingGroups {
-            simplex: render_device.create_bind_group(
-                "simplex binding",
-                &pipeline.simplex_pipeline.get_bind_group_layout(0).into(),
-                &BindGroupEntries::sequential((
-                    buffers.points.buffer().as_entire_binding(),
-                    buffers.heights.buffer().as_entire_binding(),
-                )),
-            ),
             voxels: render_device.create_bind_group(
                 "voxels binding",
                 &pipeline.voxels_pipeline.get_bind_group_layout(0).into(),
@@ -242,52 +200,6 @@ pub fn voxel_polygonize_system(
                 )),
             ),
         };
-
-        if !buffers.points.is_empty() {
-            let mut command_encoder =
-                render_device.create_command_encoder(&CommandEncoderDescriptor {
-                    label: Some("simplex command encoder"),
-                });
-            buffers
-                .points
-                .encode_write(render_queue.as_ref(), &mut command_encoder);
-            {
-                let mut pass =
-                    command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
-                pass.set_pipeline(&pipeline.simplex_pipeline);
-                pass.set_bind_group(0, &binding_groups.simplex, &[]);
-                pass.dispatch_workgroups((CHUNK_SZ / 32) as u32, (CHUNK_SZ / 32) as u32, 1);
-            }
-            buffers
-                .heights
-                .encode_read(CHUNK_SZ_2, &mut command_encoder);
-            render_queue.submit(once(command_encoder.finish()));
-            buffers.heights.map_buffer(CHUNK_SZ_2);
-            render_device.poll(Wait);
-            buffers.heights.read_and_unmap_buffer(CHUNK_SZ_2);
-
-            for z in 0..CHUNK_SZ {
-                for y in 0..CHUNK_SZ {
-                    for x in 0..CHUNK_SZ {
-                        let noise01 = (buffers.heights.as_slice()[x + z * CHUNK_SZ] + 1.0) * 0.5;
-                        let height = noise01 * 4.0 + 8.0 - (y as f32);
-                        let mut density = 0.0;
-
-                        if height > 1.0 {
-                            density = 1.0;
-                        } else if height > 0.0 {
-                            density = height;
-                        }
-                        // voxels.0[x + y * CHUNK_SZ + z * CHUNK_SZ_2] = Voxel {
-                        //     flags: if z == (noise01 * 4.0) as usize { 1 } else { 0 },
-                        //     density: 0.0,
-                        // };
-                        chunk.voxels[x + y * CHUNK_SZ + z * CHUNK_SZ_2] =
-                            Voxel { flags: 0, density };
-                    }
-                }
-            }
-        }
 
         let mut command_encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("voxel 1 command encoder"),

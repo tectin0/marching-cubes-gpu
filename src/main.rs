@@ -1,20 +1,35 @@
 mod camera;
 mod lut;
-mod voxel;
+mod marching_cubes_cpu;
+mod marching_cubes_gpu;
 
 use bevy::app::App;
 
+use bevy::log::LogPlugin;
+use bevy::math::primitives;
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, VertexAttributeValues};
+use bevy::render::mesh::{
+    Indices, PlaneMeshBuilder, RhombusMeshBuilder, SphereMeshBuilder, VertexAttributeValues,
+};
 use bevy::render::render_asset::RenderAssetUsages;
+use bevy_rapier3d::plugin::{NoUserData, RapierPhysicsPlugin};
+use bevy_rapier3d::prelude::Collider;
+use bevy_rapier3d::render::RapierDebugRenderPlugin;
 use camera::camera_control;
-use voxel::{Chunk, VoxelsPlugin};
+use marching_cubes_cpu::{Bounds, MarchingCubesCpuPlugin, VoxelGrid};
+use marching_cubes_gpu::{Chunk, MarchingCubesGpuPlugin};
 use wgpu::PrimitiveTopology;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(VoxelsPlugin)
+        .add_plugins(DefaultPlugins.set(LogPlugin {
+            level: bevy::log::Level::DEBUG,
+            ..Default::default()
+        }))
+        // .add_plugins(MarchingCubesGpuPlugin)
+        .add_plugins(MarchingCubesCpuPlugin)
+        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+        // .add_plugins(RapierDebugRenderPlugin::default())
         .insert_resource(AmbientLight {
             color: Color::WHITE,
             brightness: 100.0,
@@ -29,6 +44,7 @@ struct CameraMarker;
 
 fn setup(
     mut commands: Commands,
+    mut ambient_light: ResMut<AmbientLight>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -40,16 +56,23 @@ fn setup(
         CameraMarker,
     ));
 
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.1, 0.1, 0.6),
-            reflectance: 0.5,
-            ..Default::default()
-        }),
-        transform: Transform::from_xyz(0.0, 0.0, 0.0),
+    ambient_light.brightness = 100.0;
+
+    commands.spawn(PointLightBundle {
+        transform: Transform::from_xyz(4.0, 8.0, 4.0),
         ..Default::default()
     });
+
+    // commands.spawn(PbrBundle {
+    //     mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+    //     material: materials.add(StandardMaterial {
+    //         base_color: Color::srgb(0.1, 0.1, 0.6),
+    //         reflectance: 0.5,
+    //         ..Default::default()
+    //     }),
+    //     transform: Transform::from_xyz(0.0, 0.0, 0.0),
+    //     ..Default::default()
+    // });
 }
 
 fn spawn_voxel_sys(
@@ -75,6 +98,25 @@ fn spawn_voxel_sys(
         Mesh::ATTRIBUTE_UV_0,
         VertexAttributeValues::Float32x2(Vec::with_capacity(4096)),
     );
+
+    let mesh = SphereMeshBuilder {
+        sphere: Sphere::new(2.0),
+        kind: bevy::render::mesh::SphereKind::Uv {
+            sectors: 32,
+            stacks: 32,
+        },
+    }
+    .build();
+
+    // let mesh = Cuboid::new(2.0, 2.0, 2.0).mesh().build();
+
+    let collider = Collider::from_bevy_mesh(
+        &mesh,
+        &bevy_rapier3d::prelude::ComputedColliderShape::TriMesh,
+    )
+    .unwrap();
+
+    let voxel_grid = VoxelGrid::from_mesh(&mesh, [32, 32, 32]);
     let mesh_handle = meshes.add(mesh);
     let ground_mat_handle = materials.add(StandardMaterial {
         base_color: Color::BLACK,
@@ -88,5 +130,7 @@ fn spawn_voxel_sys(
             material: ground_mat_handle.clone(),
             ..default()
         },
+        voxel_grid,
+        collider.clone(),
     ));
 }

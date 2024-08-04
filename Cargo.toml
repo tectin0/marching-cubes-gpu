@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.14.0"
-bevy_rapier3d = "0.27.0"
+bevy_rapier3d = { version = "0.27.0", features = ["debug-render"] }
 bytemuck = "1.16.1"
 wgpu = { version = "0.20", default-features = false, features = [
     "wgsl",
